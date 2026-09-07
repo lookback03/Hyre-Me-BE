@@ -2,6 +2,7 @@ import os
 import json
 import mimetypes
 from datetime import datetime, date
+from typing import Iterator
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -206,39 +207,55 @@ RESUME_RESPONSE_SCHEMA = types.Schema(
     },
 )
 
-def generate_masterpiece_resume(
-    profile_data: dict, 
-    experiences: list, 
+class _DateTimeEncoder(json.JSONEncoder):
+    """경험 데이터에 포함될 수 있는 날짜/시간을 JSON으로 변환합니다."""
+
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+def _normalise_resume_inputs(
+    profile_data: dict,
+    experiences: list,
     company_data: dict,
-    additional_prompt: str = "",
-    language: str = "한국어"
-) -> dict:
-    """
-    사용자의 포트폴리오와 목표 기업 정보를 바탕으로 Gemini를 활용하여 맞춤형 자소서를 생성합니다.
-    """
-    # 입력값 검증 및 dict 변환
+) -> tuple[dict, list, dict]:
+    """AI 프롬프트에 넣을 입력값의 최소 타입을 보장합니다."""
     if not isinstance(profile_data, dict):
         profile_data = {}
     if not isinstance(company_data, dict):
         company_data = {}
     if not isinstance(experiences, list):
         experiences = []
-    
-    # 1. 경험 데이터를 안전하게 JSON 문자열로 변환 (datetime 포함)
-    class DateTimeEncoder(json.JSONEncoder):
-        def default(self, obj):
-            if isinstance(obj, (datetime, date)):
-                return obj.isoformat()
-            return super().default(obj)
-    
+
+    return profile_data, experiences, company_data
+
+
+def _build_resume_prompt(
+    profile_data: dict,
+    experiences: list,
+    company_data: dict,
+    additional_prompt: str = "",
+    language: str = "한국어",
+) -> str:
+    """동기식/스트리밍 생성에서 공통으로 사용하는 Gemini 프롬프트를 만듭니다."""
+    profile_data, experiences, company_data = _normalise_resume_inputs(
+        profile_data, experiences, company_data
+    )
+
+    # 경험 데이터는 ORM에서 온 날짜 객체를 포함할 수 있으므로 별도 인코더를 사용합니다.
     try:
-        experiences_json = json.dumps(experiences, ensure_ascii=False, cls=DateTimeEncoder)
+        experiences_json = json.dumps(
+            experiences,
+            ensure_ascii=False,
+            cls=_DateTimeEncoder,
+        )
     except Exception as e:
         print(f"경험 데이터 JSON 변환 실패: {e}")
         experiences_json = "[]"
-    
-    # 2. 사용자 및 기업 데이터를 활용하여 AI에게 내릴 고도화된 마스터 프롬프트 구성
-    prompt = f"""
+
+    return f"""
     당신은 삼성, 네이버, 카카오 등 국내 대기업과 글로벌 Big Tech 기업 채용을 총괄하는 10년 차 IT 전문 기술 취업 컨설턴트입니다.
     제공된 [사용자 스펙 및 경험]과 [타겟 기업 정보]를 정밀 분석하여, 서류 전형을 무조건 통과할 수 있는 수준의 정제되고 완성도 높은 자기소개서를 마크다운 형식으로 작성해주세요.
 
@@ -279,29 +296,109 @@ def generate_masterpiece_resume(
     반드시 제공된 JSON 스키마 규격에 맞추어 응답해야 합니다.
     """
 
+
+def _resume_generation_config() -> types.GenerateContentConfig:
+    """자소서 생성에 사용하는 구조화 JSON 응답 설정입니다."""
+    return types.GenerateContentConfig(
+        temperature=0.7,
+        response_mime_type="application/json",
+        response_schema=RESUME_RESPONSE_SCHEMA,
+    )
+
+
+def parse_resume_response(response_text: str) -> dict:
+    """Gemini가 반환한 구조화 JSON 텍스트를 자소서 결과 딕셔너리로 변환합니다.
+
+    스트리밍 경로에서는 마지막 청크를 받은 뒤 한 번만 호출합니다. JSON이
+    완성되지 않은 경우 예외를 호출자에게 전달하여 SSE의 ``error`` 이벤트로
+    안내할 수 있게 합니다.
+    """
+    if not response_text.strip():
+        raise ValueError("Gemini가 빈 응답을 반환했습니다.")
+    result = json.loads(response_text)
+    if not isinstance(result, dict):
+        raise ValueError("Gemini 응답이 JSON 객체가 아닙니다.")
+    return result
+
+
+def generate_masterpiece_resume(
+    profile_data: dict,
+    experiences: list,
+    company_data: dict,
+    additional_prompt: str = "",
+    language: str = "한국어",
+) -> dict:
+    """사용자의 포트폴리오와 목표 기업 정보로 자소서를 완성해 반환합니다.
+
+    기존 동기식 ``POST /api/resumes/generate``가 사용하는 함수입니다. AI
+    호출이 실패하면 기존 클라이언트 호환성을 위해 실패 결과를 반환합니다.
+    실시간 진행 상황이 필요한 경우 ``stream_masterpiece_resume``를
+    사용하세요.
+    """
+    profile_data, experiences, company_data = _normalise_resume_inputs(
+        profile_data, experiences, company_data
+    )
+    prompt = _build_resume_prompt(
+        profile_data=profile_data,
+        experiences=experiences,
+        company_data=company_data,
+        additional_prompt=additional_prompt,
+        language=language,
+    )
+
     try:
-        # 3. 구조화된 JSON 출력을 강제하는 설정과 함께 Gemini API 호출
         print(f"[{company_data.get('name', '자소서')}] 지원을 위한 자소서 생성 중...")
         response = client.models.generate_content(
             model=GEMINI_MODEL_NAME,
             contents=[prompt],
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                response_mime_type="application/json",
-                response_schema=RESUME_RESPONSE_SCHEMA,
-            ),
+            config=_resume_generation_config(),
         )
-        
-        # 4. JSON 형태의 문자열 응답을 파이썬 딕셔너리로 변환하여 반환
-        return json.loads(response.text)
-        
+
+        return parse_resume_response(response.text)
+
     except Exception as e:
         print(f"AI 자소서 생성 중 오류 발생: {e}")
-        # API 통신 실패나 에러가 났을 때 프론트엔드가 터지지 않도록 기본값 반환
         return {
-            "title": "생성 실패", 
+            "title": "생성 실패",
             "content_markdown": "자소서 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
             "reasoning": str(e),
             "enhanced_keywords": [],
-            "interview_questions": []
+            "interview_questions": [],
         }
+
+
+def stream_masterpiece_resume(
+    profile_data: dict,
+    experiences: list,
+    company_data: dict,
+    additional_prompt: str = "",
+    language: str = "한국어",
+) -> Iterator[str]:
+    """Gemini의 구조화된 JSON 응답 청크를 순서대로 전달합니다.
+
+    ``google-genai``의 동기 ``generate_content_stream``을 사용하므로 이
+    함수는 동기 이터레이터입니다. 각 문자열은 완성된 자소서가 아니라
+    JSON 응답의 일부일 수 있으며, 호출자는 모두 이어 붙인 뒤
+    :func:`parse_resume_response`로 최종 결과를 만들어야 합니다.
+
+    예외를 내부에서 삼키지 않는 이유는 스트리밍 응답이 이미 시작된 뒤에는
+    HTTP 상태 코드를 바꿀 수 없기 때문입니다. 라우터가 예외를 받아 SSE
+    ``error`` 이벤트로 변환합니다.
+    """
+    prompt = _build_resume_prompt(
+        profile_data=profile_data,
+        experiences=experiences,
+        company_data=company_data,
+        additional_prompt=additional_prompt,
+        language=language,
+    )
+
+    response_stream = client.models.generate_content_stream(
+        model=GEMINI_MODEL_NAME,
+        contents=[prompt],
+        config=_resume_generation_config(),
+    )
+    for response in response_stream:
+        text = getattr(response, "text", None)
+        if text:
+            yield text
