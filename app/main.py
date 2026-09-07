@@ -20,7 +20,7 @@ app = FastAPI(
     description="Hyre Me Backend API",
     openapi_tags=[
         {"name": "시스템", "description": "헬스 체크 및 서버 상태 확인 API"},
-        {"name": "계정", "description": "회원가입, 로그인, 내 정보 조회/수정 API"},
+        {"name": "계정", "description": "회원가입, 로그인, 내 정보 조회/수정/탈퇴 API"},
         {"name": "포트폴리오", "description": "포트폴리오 기본 정보 및 경험 관리 API"},
         {"name": "기업", "description": "목표 기업 관리 API"},
         {"name": "자소서", "description": "자소서 생성 및 생성된 자소서 관리 API"},
@@ -67,4 +67,3 @@ def current_time():
     - **current_time**: 생성된 서버 시간 (ISO 8601 포맷, 예: `2026-05-19T12:34:56.789123`)
     """
     return {"current_time": datetime.now().isoformat()}
-

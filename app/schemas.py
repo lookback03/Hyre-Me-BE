@@ -24,6 +24,15 @@ class UserUpdate(BaseModel):
     name: Optional[constr(min_length=1)] = None
     password: Optional[constr(min_length=1)] = None
 
+
+class UserDeleteRequest(BaseModel):
+    password: constr(min_length=1) = Field(
+        ...,
+        description="회원 탈퇴를 확인하기 위한 현재 비밀번호입니다.",
+        examples=["현재 비밀번호"],
+    )
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
