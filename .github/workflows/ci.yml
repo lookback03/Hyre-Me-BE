@@ -1,4 +1,4 @@
-name: Deploy to AWS Instance Server
+name: BE Deploy
 
 on:
   push:
