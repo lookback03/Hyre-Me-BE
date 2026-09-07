@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, constr
+from pydantic import BaseModel, EmailStr, Field, constr
 from typing import Optional, List
 from datetime import datetime, date
 
@@ -236,6 +236,20 @@ class PortfolioSaveResponse(BaseModel):
     languages: List[PortfolioLanguageResponse]
 
 class GenerateResumeRequest(BaseModel):
-    company_id: int
-    additional_prompt: Optional[str] = None
-    language: Optional[str] = "한국어"
+    """자소서 생성 및 SSE 스트리밍 생성에 공통으로 사용하는 요청입니다."""
+
+    company_id: int = Field(
+        ...,
+        description="지원할 목표 기업 ID. 로그인한 사용자 소유의 기업이어야 합니다.",
+        examples=[1],
+    )
+    additional_prompt: Optional[str] = Field(
+        default=None,
+        description="자소서에 추가로 반영할 요청사항 또는 강조할 항목입니다.",
+        examples=["협업 과정에서의 기술적 의사결정을 강조해 주세요."],
+    )
+    language: Optional[str] = Field(
+        default="한국어",
+        description="자소서 제목과 본문에 사용할 언어입니다. 작성 포인트와 면접 질문은 한국어입니다.",
+        examples=["한국어", "English"],
+    )
